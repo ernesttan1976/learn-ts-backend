@@ -1,95 +1,148 @@
-# Building Production-Ready, Type-Safe Express APIs with TypeScript: A Step-by-Step Engineering Guide
+# Building Type-Safe Express APIs with TypeScript, PostgreSQL, and Prisma
 
-## 1. Environment Initialization and Compiler Architecture
+This guide builds a small Express API for shelter pets. TypeScript checks the application code, PostgreSQL persists the data, and Prisma provides the schema, migrations, generated client, and database queries. The examples use Express 5 and Prisma ORM 7.
 
-### Context & Strategic Value
+## 1. Project Setup and Configuration
 
-Transitioning backend infrastructure from plain JavaScript Express servers to strongly typed Node.js environments represents a critical architectural shift in enterprise backend engineering. Plain JavaScript allows rapid prototyping, but frequently introduces runtime failure modes through unverified parameter signatures, implicit type coercions, and typos in object property lookups. Integrating TypeScript introduces static analysis directly into the development and build pipelines. By verifying runtime contracts at compile time, static analysis eliminates manual type guessing, prevents entire classes of runtime exceptions before deployment, and lowers maintenance overhead across enterprise backend microservices.
+### Prerequisites
 
-### Node Project & Dependency Provisioning
-
-Initializing a strongly typed Express project requires separating runtime production dependencies from development-only toolchains. Execute the following shell commands to initialize the Node.js project workspace and provision the required packages:
+Install Node.js 20.19.0 or newer (or Node.js 22.12.0 or newer), as required by Prisma 7, and make a PostgreSQL database available locally or remotely. Create an empty development database named `pet_api`; with PostgreSQL command-line tools installed, you can run:
 
 ```bash
-# Initialize standard Node.js package setup
-npm init -y
-
-# Install core production dependencies
-npm install express cors
-
-# Install development dependencies: TypeScript engine, type declarations, and base TSConfig
-npm install -D typescript @types/express @types/cors @tsconfig/node20
+createdb pet_api
 ```
 
+Keep the database password in a local environment file, not in source code or a committed configuration file. This project already ignores `.env` and `.env.*` while allowing `.env.example` to be committed.
 
-### Production vs. Development Dependencies
+### Initialize the Node.js project and install dependencies
 
-* Production Dependencies (express, cors): Code bases executed directly by the Node.js runtime engine in production environments.
-* Development Dependencies (typescript, @types/express, @types/cors, @tsconfig/node20): Compilers, type declaration maps, and configuration packages required exclusively during development to type-check, transpile, and bundle build artifacts.
+```bash
+npm init -y
 
-### The Role of Definitely Typed (@types/*)
+# Runtime dependencies
+npm install express cors @prisma/client @prisma/adapter-pg pg dotenv
 
-Core libraries like Express and CORS were originally authored in standard JavaScript and do not export native TypeScript types. The Definitely Typed repository delivers community-maintained type definitions via the @types/* namespace. Installing @types/express and @types/cors supplies the TypeScript compiler with exact interface signatures for application instances, routing methods, request/response lifecycle objects, and middleware pipelines, unlocking full IDE IntelliSense and compile-time contract verification.
+# Development and type-checking tools
+npm install -D typescript @types/express @types/cors @tsconfig/node20 prisma tsx @types/pg
+```
 
-### TSConfig Design Strategy
+The Prisma CLI (`prisma`) and `tsx` are development tools. `@prisma/client`, the PostgreSQL driver adapter, `pg`, Express, and dotenv are needed by the running application. Prisma 7 uses a PostgreSQL driver adapter when the client connects to PostgreSQL.
 
-The tsconfig.json file dictates how the TypeScript compiler (tsc) parses source code and generates JavaScript build artifacts. Rather than manually authoring low-level compiler flags, the project extends @tsconfig/node20, a pre-configured baseline tailored specifically for Node.js 20 runtime environments.
+### Use native Node.js ES modules
 
-Create tsconfig.json in the root directory:
+Prisma 7's generated client is used as an ES module. Update `package.json` to set the package type and scripts (preserve any other package metadata already in your project):
+
+```json
+{
+  "type": "module",
+  "scripts": {
+    "build": "prisma generate && tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:seed": "prisma db seed"
+  }
+}
+```
+
+Configure TypeScript to emit Node-compatible ESM. Relative imports in TypeScript source use `.js` extensions; TypeScript resolves them to the corresponding `.ts` files and preserves the extensions for Node.js at runtime.
 
 ```jsonc
 // tsconfig.json
 {
   "extends": "@tsconfig/node20/tsconfig.json",
   "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "rootDir": "src",
-    "outDir": "dist"
-  }
+    "outDir": "dist",
+    "esModuleInterop": true
+  },
+  "include": ["src/**/*.ts"]
 }
 ```
 
+The `include` setting keeps the root-level Prisma CLI configuration and the seed script out of the application's `tsc` build. The seed script is run directly by `tsx`.
 
-### Strategic Compiler Flags & Strictness Guarantees
+### Initialize Prisma and configure the database URL
 
-By extending @tsconfig/node20/tsconfig.json, the configuration implicitly enables critical strictness flags:
+Create the Prisma files and put the generated client under `src/` so that it is included in the TypeScript build:
 
-* "strict": true: Enables the entire suite of strict type-checking behaviors, including noImplicitAny, strictNullChecks, and strictFunctionTypes.
-* "noImplicitAny": true: Forces developers to explicitly declare types or generics whenever TypeScript cannot infer a type, eliminating accidental fallbacks to un-typed any structures.
-* "moduleResolution": "node": Configures module resolution logic to mimic standard Node.js require/import behavior, ensuring seamless interoperability with third-party NPM packages and Express middleware modules.
+```bash
+npx prisma init --datasource-provider postgresql --output ../src/generated/prisma
+```
 
-### Operational Boundary via Directory Configuration
+Set a local `.env` file in the project root. Substitute your own local database credentials:
 
-* rootDir ("src"): Restricts the TypeScript compiler to parse source files located exclusively within the src directory.
-* outDir ("dist"): Directs the compiler to output compiled JavaScript artifacts into a dedicated dist target directory.
+```dotenv
+DATABASE_URL="postgresql://postgres:local-password@localhost:5432/pet_api?schema=public"
+```
 
-Isolating high-level TypeScript source code (src/) from executable JavaScript output (dist/) creates a strict operational boundary. Developers work entirely within src/, while deployment scripts execute raw JavaScript directly from dist/, eliminating runtime compilation overhead in production environments.
+Prisma CLI loads the configuration file below; the application loads `.env` through `dotenv/config`. Never commit real credentials. If you share setup instructions, provide placeholders in `.env.example` instead.
 
-### Directory Structure Visualisation
+Create or update `prisma.config.ts` in the project root:
+
+```ts
+// prisma.config.ts
+import 'dotenv/config';
+import { defineConfig, env } from 'prisma/config';
+
+export default defineConfig({
+  schema: 'prisma/schema.prisma',
+  migrations: {
+    path: 'prisma/migrations',
+    seed: 'tsx prisma/seed.ts',
+  },
+  datasource: {
+    url: env('DATABASE_URL'),
+  },
+});
+```
+
+The config tells the Prisma CLI where to find the schema, migration history, seed command, and connection URL. The database URL is deliberately kept outside the Prisma schema and source code.
+
+### Project layout
 
 ```text
-my-express-app/
-├── node_modules/
-├── dist/                  # Auto-generated compilation target
-│   └── index.js
-├── src/                   # Developer source directory
+pet-api/
+├── prisma/
+│   ├── migrations/              # Generated, versioned SQL migrations
+│   ├── schema.prisma            # PostgreSQL models
+│   └── seed.ts                  # Development sample data
+├── src/
+│   ├── controllers/
+│   ├── generated/prisma/         # Generated by prisma generate; do not edit
+│   ├── lib/prisma.ts             # Shared Prisma client
+│   ├── middleware/
+│   ├── routes/
+│   ├── types/
 │   └── index.ts
+├── .env                         # Local secrets; ignored by Git
 ├── package.json
-├── package-lock.json
+├── prisma.config.ts
 └── tsconfig.json
 ```
 
+### Build and migration commands
 
-Establishing a structured project baseline ensures a predictable compilation pipeline, setting a clean foundation for instantiating the core Express server.
+After editing the Prisma schema, create and apply a development migration, generate the client, and seed an empty development database:
 
-## 2. Core Server Instantiation and Compiling Pipelines
+```bash
+npx prisma validate
+npm run db:migrate -- --name init
+npx prisma generate
+npm run db:seed
+npm run build
+```
 
-### Context & Strategic Value
+Use `prisma migrate dev` while developing. In a production deployment, apply committed migrations with `prisma migrate deploy`; do not use the development migration command against production. Generate the client as part of the build so the generated TypeScript API matches the checked-in schema.
 
-Express's TypeScript definitions provide contextual types for route and lifecycle callbacks. Add explicit annotations where they clarify a contract or where TypeScript cannot infer the intended type; obvious values and callback parameters usually need no extra annotations.
+## 2. Express Server and TypeScript Build
 
-### Core Server Boilerplate
+### Start with a small Express application
 
-Create the application entry point at src/index.ts. Express provides the callback parameter types from the methods being called, while TypeScript infers the types of `app` and `port` from their initial values.
+Create `src/index.ts`. Express supplies contextual types for route callbacks, so the callback parameters and values inferred from initializers do not need redundant annotations.
 
 ```ts
 // src/index.ts
@@ -98,8 +151,8 @@ import express from 'express';
 const app = express();
 const port = 8000;
 
-app.get('/', (req, res) => {
-  res.json({});
+app.get('/', (_req, res) => {
+  res.json({ message: 'pet API' });
 });
 
 app.listen(port, () => {
@@ -107,459 +160,430 @@ app.listen(port, () => {
 });
 ```
 
+### Compile and run
 
-### Key Implementation Details
+`npm run build` generates the Prisma client and compiles the application from `src/` into `dist/`. During development, `npm run dev` runs TypeScript directly and restarts the server when source files change. Start the compiled app with:
 
-* Contextual callback types: `app.get()` and `app.listen()` provide types for their callback parameters, so `req`, `res`, and the listener callback need no explicit annotations.
-* Inferred values and return type: TypeScript infers `app` and `port` from their initial values. Since the callbacks do not return a value, their return type is inferred as `void`; writing `: void` is optional.
+```bash
+npm run build
+npm start
+```
 
-### Build Engine & Compilation Scripts
+For the examples below, the database must be running, the `.env` connection URL must be correct, and the schema must have been migrated and seeded. Visit `http://localhost:8000/` to check the baseline route.
 
-Node.js does not natively execute TypeScript files (.ts). Running node src/index.ts directly triggers execution errors due to unrecognized TypeScript syntax extensions. Source files must be transpiled into standard JavaScript (.js) prior to execution.
+## 3. Model Persistent Data with Prisma
 
-### Executing Transpilation via npx tsc
+### Define the PostgreSQL schema
 
-Running npx tsc invokes the local TypeScript compiler. The compiler reads rules from tsconfig.json, compiles every .ts file inside src/, and outputs clean .js files into dist/.
+Prisma's schema is the source of truth for the database models. Replace the generated contents of `prisma/schema.prisma` with the following model. The separate `MedicalRecord` table keeps the API's nested medical-record shape while enforcing a one-to-one relationship with a pet.
 
-### Build and Start Scripts Configuration
+```prisma
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
 
-Configure package.json to automate build and execution pipelines:
+datasource db {
+  provider = "postgresql"
+}
 
-```jsonc
-// package.json
-{
-  "name": "express-typescript-api",
-  "version": "1.0.0",
-  "main": "dist/index.js",
-  "scripts": {
-    "build": "npx tsc",
-    "start": "npx tsc && node dist/index.js"
-  }
+model Pet {
+  id            Int            @id @default(autoincrement())
+  name          String
+  species       String
+  breed         String
+  age           Int
+  adopted       Boolean        @default(false)
+  intakeDate    DateTime       @db.Date
+  adoptionDate  DateTime?      @db.Date
+  medicalRecord MedicalRecord?
+  photo         String
+}
+
+model MedicalRecord {
+  id             Int    @id @default(autoincrement())
+  vaccinations   String[]
+  weightInKilos  Float
+  microchipId    String?
+  petId          Int    @unique
+  pet            Pet    @relation(fields: [petId], references: [id], onDelete: Cascade)
 }
 ```
 
+`String[]` is stored as a PostgreSQL text array. `String?` maps to a nullable column, and `DateTime?` makes the adoption date optional. `@db.Date` stores calendar dates without a time component. `MedicalRecord.petId` is unique, so a pet can have at most one medical record. The relation is optional on the `Pet` side because PostgreSQL does not require every pet row to have a matching record.
 
-* npm run build: Executes npx tsc to transform source TypeScript into executable JavaScript artifacts in dist/.
-* npm start: Chains commands using &&. It first compiles the project via npx tsc and, upon successful transpilation, starts the production server using node dist/index.js.
+Prisma generates TypeScript types from these models. Do not maintain a separate hand-written database model or an in-memory `Pet[]`; query results and create/update inputs are inferred from the generated client. A query that includes the optional relation has a `medicalRecord` property whose value can be a record or `null`.
 
-### Baseline Endpoint Verification
+### Create and apply the first migration
 
-Verify the compiled pipeline by starting the server and making an HTTP GET request to the root path:
+The migration records the SQL needed to create these tables. Review and commit the generated migration directory so other environments can reproduce the schema:
 
 ```bash
-npm start
-
-
-# Terminal output:
-# listening on port 8000
+npm run db:migrate -- --name init
+npx prisma generate
 ```
 
+`migrate dev` creates the development migration and applies it to the configured PostgreSQL database. `generate` writes the TypeScript client into `src/generated/prisma`.
 
-Performing an HTTP GET request to http://localhost:8000/ returns the target baseline response:
+### Seed development data
 
-```json
-{}
-```
-
-
-With an operational server and build pipeline established, the project can now incorporate domain-specific data structures and models.
-
-## 3. Enterprise Data Modeling with Custom TypeScript Types
-
-### Context & Strategic Value
-
-Rigid domain data modeling is fundamental to enterprise API design. Un-typed data structures easily lead to runtime mutations, missing parameters, and inconsistent payload structures between client consumers and backend systems. Authoring custom TypeScript domain interfaces ensures strict schema enforcement, eliminating runtime data corruption at compile time.
-
-### Data Structure Modularisation
-
-To enforce clean separation between data definitions and server logic, create a dedicated data repository file at src/data/pets.ts.
+Create `prisma/seed.ts` to insert a couple of records into an empty development database. The nested `create` writes each pet and its medical record together. This seed intentionally skips a database that already contains pets; it does not delete existing data.
 
 ```ts
-// src/data/pets.ts
-export type Pet = {
-  id: number;
-  name: string;
-  species: string;
-  breed: string;
-  age: number;
-  adopted: boolean;
-  intakeDate: Date;
-  adoptionDate?: Date;
-  medicalRecord: {
-    vaccinations: string[];
-    weightInKilos: number;
-    microchipId: null | string;
-  };
-  photo: string;
+// prisma/seed.ts
+import { prisma } from '../src/lib/prisma.js';
+
+async function main() {
+  if (await prisma.pet.count() > 0) {
+    console.log('Seed skipped: pets already exist.');
+    return;
+  }
+
+  await prisma.pet.create({
+    data: {
+      name: 'Bella',
+      species: 'dog',
+      breed: 'Labrador Retriever',
+      age: 3,
+      adopted: false,
+      intakeDate: new Date('2023-01-15'),
+      photo: 'bella.jpg',
+      medicalRecord: {
+        create: {
+          vaccinations: ['Rabies', 'DHPP'],
+          weightInKilos: 25.4,
+          microchipId: null,
+        },
+      },
+    },
+  });
+
+  await prisma.pet.create({
+    data: {
+      name: 'Milo',
+      species: 'cat',
+      breed: 'Siamese',
+      age: 2,
+      adopted: true,
+      intakeDate: new Date('2023-02-20'),
+      adoptionDate: new Date('2023-03-10'),
+      photo: 'milo.jpg',
+      medicalRecord: {
+        create: {
+          vaccinations: ['FVRCP'],
+          weightInKilos: 4.2,
+          microchipId: '985141002341112',
+        },
+      },
+    },
+  });
+}
+
+main()
+  .catch((error: unknown) => {
+    console.error(error);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });
+```
+
+Run `npm run db:seed` after the first migration. On an empty database, the generated IDs will typically be `1` and `2`; use the values returned from the list endpoint rather than depending on those IDs in an existing database.
+
+### Create one shared Prisma client
+
+Create `src/lib/prisma.ts`. Prisma 7 connects to PostgreSQL through its `pg` driver adapter. Construct one client for the server process and reuse it for all requests; do not create a client in each controller or disconnect it after each query.
+
+```ts
+// src/lib/prisma.ts
+import 'dotenv/config';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { PrismaClient } from '../generated/prisma/client.js';
+
+const connectionString = process.env.DATABASE_URL;
+
+if (!connectionString) {
+  throw new Error('DATABASE_URL is not set');
+}
+
+const adapter = new PrismaPg({ connectionString });
+export const prisma = new PrismaClient({ adapter });
+```
+
+The process owns the client lifecycle. In a long-running deployment, close the HTTP server gracefully and call `await prisma.$disconnect()` during shutdown. Avoid disconnecting in a request handler.
+
+### Type the API representation
+
+A Prisma query with `include` returns a generated model type that includes the relation. Put the shared API types in `src/types/pets.ts`:
+
+```ts
+// src/types/pets.ts
+import type { Prisma } from '../generated/prisma/client.js';
+
+export type PetWithMedicalRecord = Prisma.PetGetPayload<{
+  include: { medicalRecord: true };
+}>;
+
+export type ApiError = {
+  message: string;
 };
-
-const pets: Pet[] = [
-  {
-    id: 1,
-    name: "Bella",
-    species: "dog",
-    breed: "Labrador Retriever",
-    age: 3,
-    adopted: false,
-    intakeDate: new Date("2023-01-15"),
-    medicalRecord: {
-      vaccinations: ["Rabies", "DHPP"],
-      weightInKilos: 25.4,
-      microchipId: null
-    },
-    photo: "bella.jpg"
-  },
-  {
-    id: 2,
-    name: "Milo",
-    species: "cat",
-    breed: "Siamese",
-    age: 2,
-    adopted: true,
-    intakeDate: new Date("2023-02-20"),
-    adoptionDate: new Date("2023-03-10"),
-    medicalRecord: {
-      vaccinations: ["FVRCP"],
-      weightInKilos: 4.2,
-      microchipId: "985141002341112"
-    },
-    photo: "milo.jpg"
-  }
-];
-
-export default pets;
 ```
 
+The generated type reflects database nullability: for this schema, `medicalRecord` can be `null`. Prisma `DateTime` fields are JavaScript `Date` values in server code; when serialized by `res.json()`, they become ISO 8601 strings.
 
-### Advanced Type Features Analysis
+## 4. Type-Safe Express Handlers with Database Queries
 
-The design of the Pet interface demonstrates several core TypeScript modeling features:
+### Express generics are compile-time contracts
 
-1. Optional Fields (adoptionDate?): The ? modifier marks a field as optional. Pets currently awaiting adoption do not possess an adoptionDate, making this field property typed as Date | undefined.
-2. Union Types (null | string): The microchipId field utilizes a union type (null | string). This safely handles un-chipped animals represented by null while allowing string identifier assignment upon microchip placement.
-3. Native Date Objects (Date): Utilizing JavaScript's native Date object standardizes time calculations within the application runtime, preventing arbitrary date string formatting bugs across backend services.
-4. Nested Structural Modeling (medicalRecord): Inline type definition of complex child objects guarantees deep structural verification. The vaccinations array is typed as string[], and weightInKilos is typed as number.
-
-**Architectural Note:** JSON Serialization of Native Objects While backend domain models leverage native JavaScript Date instances for internal operations and arithmetic, transmitting these objects across HTTP via res.json() implicitly executes Date.prototype.toJSON(), converting Date objects into ISO 8601 formatted strings (e.g., "2023-01-15T00:00:00.000Z"). Client applications and API response generic type declarations must account for stringified dates during client-side JSON payload consumption.
-
-### Type vs. Data Export Strategy
-
-The module utilizes a dual-export strategy:
-
-* Interface Export (export type Pet): Exported as a pure compile-time construct. It is stripped away completely during compilation and generates zero output overhead in compiled JavaScript (dist/data/pets.js).
-* Value Export (export default pets): Exported as a runtime JavaScript array populated with concrete data, retained in the build bundle executed by Node.js.
-
-Defining domain models establishes the contract baseline required to configure generic parameterization across Express request and response handling logic.
-
-## 4. End-to-End Type Safety via Express Request and Response Generics
-
-### Context & Strategic Value
-
-By default, Express route handlers type dynamic request parameters, query parameter structures, request bodies, and response payloads as any or unknown. This default behavior allows invalid field access, missing parameter assumptions, and mismatched response payloads to bypass static checks. Parameterizing Express interfaces using generic arguments enforces structural constraints across dynamic route parameters, query payloads, and outgoing JSON responses.
-
-### Deconstructing Express Generics
-
-Express exposes parameterizable generic interfaces for Request and Response:
+Express's `RequestHandler` generic parameters let the application describe path parameters, response bodies, request bodies, and query parameters. They do not validate values supplied by an HTTP client. Validate query strings before using them to build a database query; never assume a type annotation makes network input trustworthy.
 
 ```ts
-Request<P, ResBody, ReqBody, ReqQuery>
-Response<ResBody>
+RequestHandler<Params, ResBody, ReqBody, ReqQuery>
 ```
 
-
-| Generic Parameter Slot | Designation | Default Type | Engineering Purpose |
-| --- | --- | --- | --- |
-| Slot 1 (P) | Path Parameters | `core.ParamsDictionary` | Defines keys and types for dynamic route parameters (e.g., `req.params.id`). |
-| Slot 2 (ResBody) | Response Body Payload | `any` / `unknown` | Enforces the structure of data sent via `res.json()`. |
-| Slot 3 (ReqBody) | Request Body Payload | `any` / `{}` | Types incoming POST, PUT, or PATCH JSON bodies (`req.body`). |
-| Slot 4 (ReqQuery) | Request Query String | `core.Query` | Defines keys and types for incoming URL search query strings (`req.query`). |
-
-### The Generic Slot-Skipping Pattern
-
-When parameterizing a downstream generic slot without customizing preceding slots, TypeScript requires intermediate slots to be explicitly specified. To skip unused intermediate generic slots safely without introducing un-typed any fallbacks, use {} for empty parameter objects or unknown for unused body payloads:
+For example, path parameters arrive as strings even though the Prisma model uses an integer ID. Validate the string before converting it. Prisma returns `null` when `findUnique` finds no matching row, so return a `404` in that case.
 
 ```ts
-// Parameterizing Slot 4 (ReqQuery) while skipping Slot 2 (ResBody) and Slot 3 (ReqBody)
-Request<{}, Pet[], unknown, PetQueryParams>
-```
+// Example handler in src/index.ts
+import type { RequestHandler } from 'express';
+import { prisma } from './lib/prisma.js';
+import type { ApiError, PetWithMedicalRecord } from './types/pets.js';
 
-
-### Dynamic Route Parameters (/pets/:id)
-
-When fetching an entity by its path parameter (`/pets/:id`), set the route's first generic to define `req.params` and its second generic to constrain the response body. The callback parameters then receive those types contextually.
-
-```ts
-// src/index.ts
-app.get<{ id: string }, Pet | { message: string }>('/pets/:id', (req, res) => {
+const getPetById: RequestHandler<
+  { id: string },
+  PetWithMedicalRecord | ApiError
+> = async (req, res) => {
   const { id } = req.params;
-  const pet = pets.find(p => String(p.id) === id);
+  const numericId = Number(id);
 
-  if (pet) {
-    res.json(pet);
-  } else {
-    res.status(404).json({ message: 'no pet with that ID' });
+  if (!/^\d+$/.test(id) || !Number.isSafeInteger(numericId) || numericId < 1) {
+    res.status(400).json({ message: 'pet ID must be a positive integer' });
+    return;
   }
-});
+
+  const pet = await prisma.pet.findUnique({
+    where: { id: numericId },
+    include: { medicalRecord: true },
+  });
+
+  if (!pet) {
+    res.status(404).json({ message: 'no pet with that ID' });
+    return;
+  }
+
+  res.json(pet);
+};
 ```
 
+The `include` option loads the related medical record in the same Prisma query. The controller sends the persisted row, rather than looking up a value in a JavaScript array.
 
-### Type Analysis
+### Filter a list with a Prisma `where` clause
 
-* Path Parameters (P = { id: string }): Prevents access to non-existent route parameters on req.params.
-* Union Response (ResBody = Pet | { message: string }): Restricts outgoing JSON payloads to either a valid Pet object or a standard error message structure.
-* Undefined Lookup Handling: Array.prototype.find() returns Pet | undefined. The conditional check forces explicit handling of non-existent entity lookups before responding.
-
-### Type-Safe Query Parameter Filtering
-
-To type `req.query`, set the route's fourth generic argument (`ReqQuery`). Define a dedicated query type:
+Define the query contract, then validate the raw query values at runtime. This example accepts `species`, `adopted`, `minAge`, and `maxAge`; unsupported or malformed values receive `400 Bad Request` instead of reaching Prisma unchecked.
 
 ```ts
-// src/index.ts
+// src/types/pet-query.ts
 export type PetQueryParams = {
   species?: string;
-  adopted?: 'true' | 'false';
+  adopted?: string;
   minAge?: string;
   maxAge?: string;
 };
 ```
 
-
-Apply `PetQueryParams` to the route's fourth generic. The callback parameters and array callback arguments are inferred from these types:
+The query handler below shows how strings become database filters. `mode: 'insensitive'` makes the species comparison case-insensitive on PostgreSQL.
 
 ```ts
-// src/index.ts
-app.get<{}, Pet[], unknown, PetQueryParams>('/pets', (req, res) => {
-  const { species, adopted, minAge, maxAge } = req.query;
-  let filteredPets = pets;
+// Example handler in src/index.ts
+import type { RequestHandler } from 'express';
+import type { Prisma } from './generated/prisma/client.js';
+import { prisma } from './lib/prisma.js';
+import type { ApiError, PetWithMedicalRecord } from './types/pets.js';
+import type { PetQueryParams } from './types/pet-query.js';
 
-  if (species) {
-    filteredPets = filteredPets.filter(
-      pet => pet.species.toLowerCase() === species.toLowerCase()
-    );
+const getPets: RequestHandler<
+  {},
+  PetWithMedicalRecord[] | ApiError,
+  unknown,
+  PetQueryParams
+> = async (req, res) => {
+  const { species, adopted, minAge: minAgeText, maxAge: maxAgeText } = req.query;
+  const rawValues = [species, adopted, minAgeText, maxAgeText];
+
+  // Query parsers can produce arrays or objects even though this generic
+  // describes the expected string form.
+  if (rawValues.some(value => value !== undefined && typeof value !== 'string')) {
+    res.status(400).json({ message: 'invalid pet filters' });
+    return;
   }
 
-  if (adopted) {
-    const isAdopted = JSON.parse(adopted);
-    filteredPets = filteredPets.filter(pet => pet.adopted === isAdopted);
+  if (adopted !== undefined && adopted !== 'true' && adopted !== 'false') {
+    res.status(400).json({ message: 'adopted must be true or false' });
+    return;
   }
 
-  if (minAge) {
-    const min = Number(minAge);
-    filteredPets = filteredPets.filter(pet => pet.age >= min);
+  const parseAge = (value: string | undefined): number | undefined | null => {
+    if (value === undefined) return undefined;
+    if (!/^\d+$/.test(value)) return null;
+
+    const age = Number(value);
+    return Number.isSafeInteger(age) && age <= 2_147_483_647 ? age : null;
+  };
+
+  const minAge = parseAge(minAgeText);
+  const maxAge = parseAge(maxAgeText);
+
+  if (
+    minAge === null ||
+    maxAge === null ||
+    (minAge !== undefined && maxAge !== undefined && minAge > maxAge)
+  ) {
+    res.status(400).json({ message: 'age filters must be valid non-negative integers' });
+    return;
   }
 
-  if (maxAge) {
-    const max = Number(maxAge);
-    filteredPets = filteredPets.filter(pet => pet.age <= max);
+  const where: Prisma.PetWhereInput = {};
+
+  if (species?.trim()) {
+    where.species = { equals: species.trim(), mode: 'insensitive' };
+  }
+  if (adopted !== undefined) {
+    where.adopted = adopted === 'true';
+  }
+  if (minAge !== undefined || maxAge !== undefined) {
+    where.age = {
+      ...(minAge !== undefined ? { gte: minAge } : {}),
+      ...(maxAge !== undefined ? { lte: maxAge } : {}),
+    };
   }
 
-  res.json(filteredPets);
-});
+  const pets = await prisma.pet.findMany({
+    where,
+    include: { medicalRecord: true },
+    orderBy: { id: 'asc' },
+  });
+
+  res.json(pets);
+};
 ```
 
+Prisma builds a parameterized database query from the typed `where` object. Do not concatenate client input into SQL. The array filtering from an in-memory example is replaced by PostgreSQL doing the filtering before rows are returned to the application.
 
-**Runtime validation:** Express generics are compile-time checks and disappear after compilation. They cannot prevent a client from sending malformed query values, and `JSON.parse(adopted)` can throw for invalid input. Validate untrusted data at runtime, for example with Zod or TypeBox.
+## 5. Separate Controllers and Routers
 
-Parameterizing generic request handlers establishes a solid foundation for refactoring monolithic entry points into modular software components.
+### Keep database access behind controller functions
 
-## 5. Architectural Refactoring: Decoupling via Routers and Controllers
+As the application grows, keep HTTP concerns in controllers and route declarations in an Express router. Controllers can call the shared Prisma client directly in this small example; larger applications can move reusable query logic into a service or repository layer.
 
-### Context & Strategic Value
-
-Placing route bindings, inline handler closures, and application configurations within a monolithic index.ts file leads to poor code maintainability and high coupling. Following the Separation of Concerns (SoC) design principle dictates dividing monolithic handlers into distinct architectural layers:
-
-* Routers: Responsible solely for binding route paths to controller targets and orchestrating middleware chains.
-* Controllers: Responsible for executing business logic, input parsing, and dispatching response payloads.
-
-Decoupling route definitions from business execution enhances code maintainability, scales development velocity across engineering teams, and isolates components for unit testing.
-
-### Controller Layer Isolation
-
-Create src/controllers/pets.controllers.ts. Extract all query interfaces and inline route handling logic into exported, modular controller functions.
+Create `src/controllers/pets.controllers.ts`. The single-item handler is the same database-backed logic shown above; the list handler validates inputs and builds a Prisma filter.
 
 ```ts
 // src/controllers/pets.controllers.ts
 import type { RequestHandler } from 'express';
-import pets, { type Pet } from '../data/pets';
-
-export type PetQueryParams = {
-  species?: string;
-  adopted?: 'true' | 'false';
-  minAge?: string;
-  maxAge?: string;
-};
-
-export const getPets: RequestHandler<{}, Pet[], unknown, PetQueryParams> = (req, res) => {
-  const { species, adopted, minAge, maxAge } = req.query;
-  let filteredPets = pets;
-
-  if (species) {
-    filteredPets = filteredPets.filter(
-      pet => pet.species.toLowerCase() === species.toLowerCase()
-    );
-  }
-
-  if (adopted) {
-    const isAdopted = JSON.parse(adopted);
-    filteredPets = filteredPets.filter(pet => pet.adopted === isAdopted);
-  }
-
-  if (minAge) {
-    const min = Number(minAge);
-    filteredPets = filteredPets.filter(pet => pet.age >= min);
-  }
-
-  if (maxAge) {
-    const max = Number(maxAge);
-    filteredPets = filteredPets.filter(pet => pet.age <= max);
-  }
-
-  res.json(filteredPets);
-};
+import type { Prisma } from '../generated/prisma/client.js';
+import { prisma } from '../lib/prisma.js';
+import type { ApiError, PetWithMedicalRecord } from '../types/pets.js';
+import type { PetQueryParams } from '../types/pet-query.js';
 
 export const getPetById: RequestHandler<
   { id: string },
-  Pet | { message: string }
-> = (req, res) => {
+  PetWithMedicalRecord | ApiError
+> = async (req, res) => {
   const { id } = req.params;
-  const pet = pets.find(p => String(p.id) === id);
+  const numericId = Number(id);
 
-  if (pet) {
-    res.json(pet);
-  } else {
+  if (!/^\d+$/.test(id) || !Number.isSafeInteger(numericId) || numericId < 1) {
+    res.status(400).json({ message: 'pet ID must be a positive integer' });
+    return;
+  }
+
+  const pet = await prisma.pet.findUnique({
+    where: { id: numericId },
+    include: { medicalRecord: true },
+  });
+
+  if (!pet) {
     res.status(404).json({ message: 'no pet with that ID' });
-  }
-};
-```
-
-
-### Router Layer Isolation
-
-Create src/routes/pets.routes.ts. Instantiating an explicit Express Router isolates routing path declarations from application configuration.
-
-```ts
-// src/routes/pets.routes.ts
-import express from 'express';
-import { getPets, getPetById } from '../controllers/pets.controllers';
-
-export const petRouter = express.Router();
-
-petRouter.get('/', getPets);
-petRouter.get('/:id', getPetById);
-```
-
-
-### Main Application Wiring
-
-With controllers and routers decoupled, src/index.ts serves strictly as the application entry point, attaching global middleware, mounting router endpoints, and defining global error fallbacks.
-
-```ts
-// src/index.ts
-import express from 'express';
-import cors from 'cors';
-import { petRouter } from './routes/pets.routes';
-
-const app = express();
-const port = 8000;
-
-app.use(cors());
-app.use('/pets', petRouter);
-
-// Global fallback 404 handler
-app.use((req, res) => {
-  res.status(404).json({ message: 'no endpoint found' });
-});
-
-app.listen(port, () => {
-  console.log(`listening on port ${port}`);
-});
-```
-
-
-Refactoring monolithic route files into decoupled controllers establishes clean integration points for inserting type-safe middleware modules.
-
-## 6. Type-Safe Custom Middleware Development and Chaining
-
-### Context & Strategic Value
-
-Middleware functions run within the request-response cycle, executing input sanitization, authentication checks, and parameter validation before controller logic. Typing middleware with Express's `RequestHandler` gives `req`, `res`, and `next` contextual types; the handler's generic arguments specify only the request and response shapes that matter.
-
-### Middleware Mechanics
-
-An Express middleware callback receives `(req, res, next)`. `RequestHandler` supplies contextual types for all three parameters. Calling `next()` passes control to the next middleware or controller; failing to call it or send a response leaves the request unfinished.
-
-### Dynamic Path Parameter Validation Middleware
-
-Create src/middleware/pets.middleware.ts. The validateNumericId middleware verifies that the dynamic path parameter id contains exclusively numeric digits.
-
-```ts
-// src/middleware/pets.middleware.ts
-import type { RequestHandler } from 'express';
-import type { Pet } from '../data/pets';
-
-type PetResponse = Pet | { message: string };
-
-export const validateNumericId: RequestHandler<
-  { id: string },
-  PetResponse
-> = (req, res, next) => {
-  const { id } = req.params;
-  const isNumeric = /^\d+$/.test(id);
-
-  if (!isNumeric) {
-    res.status(400).json({ message: 'pet ID must be a number' });
     return;
   }
 
-  next();
+  res.json(pet);
 };
-```
 
-
-### Execution Logic
-
-1. Reads `req.params.id`, typed through the handler's `RequestHandler<{ id: string }, ...>` declaration.
-2. Evaluates string input against a regular expression (/^\d+$/).
-3. If non-numeric, utilizes an early guard return (return;) to short-circuit execution, dispatching an HTTP 400 Bad Request status and JSON error payload.
-4. If valid, executes next(), passing processing downstream.
-
-### Query-Based Authentication Middleware
-
-Add a second custom middleware function, pleaseAuth, to src/middleware/pets.middleware.ts. This enforces simple authorization logic by requiring a password query parameter to equal "please".
-
-```ts
-// src/middleware/pets.middleware.ts
-export const pleaseAuth: RequestHandler<
-  { id: string },
-  PetResponse,
+export const getPets: RequestHandler<
+  {},
+  PetWithMedicalRecord[] | ApiError,
   unknown,
-  { password?: string }
-> = (req, res, next) => {
-  const { password } = req.query;
+  PetQueryParams
+> = async (req, res) => {
+  const { species, adopted, minAge: minAgeText, maxAge: maxAgeText } = req.query;
+  const rawValues = [species, adopted, minAgeText, maxAgeText];
 
-  if (password !== 'please') {
-    res.status(401).json({ message: 'unauthorized you must say please' });
+  if (rawValues.some(value => value !== undefined && typeof value !== 'string')) {
+    res.status(400).json({ message: 'invalid pet filters' });
+    return;
+  }
+  if (adopted !== undefined && adopted !== 'true' && adopted !== 'false') {
+    res.status(400).json({ message: 'adopted must be true or false' });
     return;
   }
 
-  next();
+  const parseAge = (value: string | undefined): number | undefined | null => {
+    if (value === undefined) return undefined;
+    if (!/^\d+$/.test(value)) return null;
+
+    const age = Number(value);
+    return Number.isSafeInteger(age) && age <= 2_147_483_647 ? age : null;
+  };
+
+  const minAge = parseAge(minAgeText);
+  const maxAge = parseAge(maxAgeText);
+  if (
+    minAge === null ||
+    maxAge === null ||
+    (minAge !== undefined && maxAge !== undefined && minAge > maxAge)
+  ) {
+    res.status(400).json({ message: 'age filters must be valid non-negative integers' });
+    return;
+  }
+
+  const where: Prisma.PetWhereInput = {};
+  if (species?.trim()) {
+    where.species = { equals: species.trim(), mode: 'insensitive' };
+  }
+  if (adopted !== undefined) {
+    where.adopted = adopted === 'true';
+  }
+  if (minAge !== undefined || maxAge !== undefined) {
+    where.age = {
+      ...(minAge !== undefined ? { gte: minAge } : {}),
+      ...(maxAge !== undefined ? { lte: maxAge } : {}),
+    };
+  }
+
+  const pets = await prisma.pet.findMany({
+    where,
+    include: { medicalRecord: true },
+    orderBy: { id: 'asc' },
+  });
+
+  res.json(pets);
 };
 ```
 
+Because this project uses Express 5, a rejected promise from an async route handler is passed to error-handling middleware. The global handler should log diagnostic details on the server, but return a generic response to clients rather than exposing connection strings, SQL, or database errors.
 
-### Generic Slot-Skipping Analysis
+### Define the router
 
-`RequestHandler` uses the same generic order as `Request`: path parameters, response body, request body, and query parameters. To type `req.query` here, the first three slots are supplied before the fourth. The early `return` stops the handler after sending an error response.
-
-### Middleware Chaining in Routes
-
-Connect custom middleware sequentially inside src/routes/pets.routes.ts. Express executes chained middleware sequentially in the order they are passed to route definitions.
+Create `src/routes/pets.routes.ts` and mount the controllers:
 
 ```ts
 // src/routes/pets.routes.ts
 import express from 'express';
-import { getPets, getPetById } from '../controllers/pets.controllers';
-import { validateNumericId, pleaseAuth } from '../middleware/pets.middleware';
+import { getPetById, getPets } from '../controllers/pets.controllers.js';
+import { pleaseAuth, validateNumericId } from '../middleware/pets.middleware.js';
 
 export const petRouter = express.Router();
 
@@ -567,27 +591,122 @@ petRouter.get('/', getPets);
 petRouter.get('/:id', pleaseAuth, validateNumericId, getPetById);
 ```
 
+The route parameters here are relative to the mount point. In `src/index.ts`, mounting this router at `/pets` makes its two routes `GET /pets` and `GET /pets/:id`.
 
-### Sequential Request Processing Flow
+### Wire up the application and error handling
 
-```text
-Incoming GET /pets/14?password=please
-   │
-   ▼
-[ pleaseAuth ] ──(Invalid / Missing Password)──► 401 Unauthorized Response
-   │ (Valid Password)
-   ▼
-[ validateNumericId ] ──(Non-Numeric ID)───────► 400 Bad Request Response
-   │ (Valid Numeric ID)
-   ▼
-[ getPetById Controller ] ─────────────────────► 200 OK (Pet JSON Payload)
+```ts
+// src/index.ts
+import express, { type ErrorRequestHandler } from 'express';
+import cors from 'cors';
+import { petRouter } from './routes/pets.routes.js';
+
+const app = express();
+const port = 8000;
+
+app.use(cors());
+app.use(express.json());
+app.use('/pets', petRouter);
+
+app.use((_req, res) => {
+  res.status(404).json({ message: 'no endpoint found' });
+});
+
+const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
+  console.error(error);
+  res.status(500).json({ message: 'internal server error' });
+};
+app.use(errorHandler);
+
+app.listen(port, () => {
+  console.log(`listening on port ${port}`);
+});
 ```
 
+The fallback 404 handler is registered after the routes. The four-argument error handler is registered after the fallback and receives errors forwarded by Express 5, including rejected async controller promises. In a production service, add graceful shutdown that stops accepting requests before disconnecting the shared Prisma client.
 
-1. pleaseAuth Execution: Evaluates incoming req.query.password. If invalid or missing, it short-circuits execution with a 401 Unauthorized response.
-2. validateNumericId Execution: Executes upon successful authorization. Validates that req.params.id is numeric. If invalid, it halts processing with a 400 Bad Request response.
-3. getPetById Execution: Executes only after passing all preceding middleware checks, ensuring safe, fully verified controller processing.
+## 6. Validate Middleware and Verify the API
+
+### Validate numeric IDs before a database lookup
+
+The ID validation middleware rejects invalid route identifiers before the controller converts them to a number. Keep the response type consistent with the controller's response type.
+
+```ts
+// src/middleware/pets.middleware.ts
+import type { RequestHandler } from 'express';
+import type { ApiError, PetWithMedicalRecord } from '../types/pets.js';
+
+export const validateNumericId: RequestHandler<
+  { id: string },
+  PetWithMedicalRecord | ApiError
+> = (req, res, next) => {
+  const { id } = req.params;
+  const numericId = Number(id);
+
+  if (!/^\d+$/.test(id) || !Number.isSafeInteger(numericId) || numericId < 1) {
+    res.status(400).json({ message: 'pet ID must be a positive integer' });
+    return;
+  }
+
+  next();
+};
+```
+
+This check prevents non-numeric, unsafe, and non-positive values from reaching Prisma. `findUnique` still needs a not-found check because a valid integer may not correspond to a stored pet.
+
+### Add simple query-based authentication middleware
+
+This example middleware requires a `password=please` query parameter. It is only a demonstration of middleware ordering, not a production authentication design; real credentials should not be sent in URLs.
+
+```ts
+// src/middleware/pets.middleware.ts
+import type { RequestHandler } from 'express';
+import type { ApiError, PetWithMedicalRecord } from '../types/pets.js';
+
+type PasswordQuery = { password?: string };
+
+export const pleaseAuth: RequestHandler<
+  { id: string },
+  PetWithMedicalRecord | ApiError,
+  unknown,
+  PasswordQuery
+> = (req, res, next) => {
+  if (req.query.password !== 'please') {
+    res.status(401).json({ message: 'unauthorized: you must say please' });
+    return;
+  }
+
+  next();
+};
+```
+
+### Verify the database-backed routes
+
+Run the migration and seed commands if you have not already, then start the development server:
+
+```bash
+npm run db:migrate -- --name init
+npm run db:seed
+npm run dev
+```
+
+Try the list endpoint and a filtered query:
+
+```bash
+curl http://localhost:8000/pets
+curl 'http://localhost:8000/pets?species=dog&adopted=false&minAge=1&maxAge=5'
+```
+
+A successful response is a JSON array loaded from PostgreSQL, with each pet's `medicalRecord` included. An invalid filter returns `400`. To check the ID route, use an ID from the list response:
+
+```bash
+curl 'http://localhost:8000/pets/1?password=please'
+curl -i 'http://localhost:8000/pets/not-a-number?password=please'
+curl -i 'http://localhost:8000/pets/999999?password=please'
+```
+
+The first request returns a pet when that ID exists, the second is rejected with `400`, and a valid but unknown integer ID returns `404`. Missing or incorrect password returns `401` before ID validation.
 
 ### Conclusion
 
-Combining TypeScript with Express transforms backend API development from an unverified JavaScript environment into a predictable software architecture. Defining compiler options in tsconfig.json, typing domain interface schemas, parameterizing core Express generics across requests and responses, and isolating concerns across Routers, Controllers, and Middleware builds a fault-tolerant codebase. This layered type safety eliminates common runtime bugs at compile time, providing a scalable foundation for modern production applications.
+This API combines TypeScript's compile-time checks with Express 5's routing and middleware, Prisma's generated client and migrations, and PostgreSQL persistence. The schema defines durable data, migrations evolve the database, and asynchronous controllers query it with validated filters. Type annotations improve the contracts between application layers, while runtime validation remains essential for every value received over HTTP.
