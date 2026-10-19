@@ -20,10 +20,10 @@ Keep the database password in a local environment file, not in source code or a 
 npm init -y
 
 # Runtime dependencies
-npm install express cors @prisma/client @prisma/adapter-pg pg dotenv
+npm install express cors @prisma/client@^7 @prisma/adapter-pg@^7 pg dotenv
 
 # Development and type-checking tools
-npm install -D typescript @types/express @types/cors @tsconfig/node20 prisma tsx @types/pg
+npm install -D typescript @types/express @types/cors @tsconfig/node20 prisma@^7 tsx @types/pg
 ```
 
 The Prisma CLI (`prisma`) and `tsx` are development tools. `@prisma/client`, the PostgreSQL driver adapter, `pg`, Express, and dotenv are needed by the running application. Prisma 7 uses a PostgreSQL driver adapter when the client connects to PostgreSQL.
